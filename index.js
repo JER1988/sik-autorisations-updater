@@ -10,91 +10,72 @@ app.get("/health", (req, res) => {
 });
 
 // ---------------- UPDATE ----------------
-app.get("/update", async (req, res) => {
-  try {
-    // Hent fuld autorisations-eksport (må tage lang tid)
-    const sikRes = await fetch(
-      "https://www.sik.dk/registries/export/autorisationsregister",
-      {
-        headers: {
-          "User-Agent": "CVR-Tjek/1.0",
-          "Accept": "application/json"
+app.get("/update", (req, res) => {
+  // Svar med det samme – så Koyeb Edge er tilfreds
+  res.json({ ok: true, status: "Batch job started" });
+
+  // Kør batch-jobbet ASYNKRONT
+  (async () => {
+    try {
+      const sikRes = await fetch(
+        "https://www.sik.dk/registries/export/autorisationsregister",
+        {
+          headers: {
+            "User-Agent": "CVR-Tjek/1.0",
+            "Accept": "application/json"
+          }
         }
-      }
-    );
+      );
 
-    if (!sikRes.ok) {
-      throw new Error(`SIK HTTP ${sikRes.status}`);
-    }
+      const sikData = await sikRes.json();
 
-    const sikData = await sikRes.json();
-
-    const AUTH_MAP = {
-      VFUL: "VVS",
-      KFUL: "Kloak",
-      EFUL: "El",
-      ASBE: "Asbest"
-    };
-
-    let written = 0;
-
-    // Gennemløb hele registret
-    for (const entry of sikData) {
-      const cvr = String(entry.cvr || "").replace(/\D/g, "");
-      if (cvr.length !== 8) continue;
-
-      const auth = {
-        VVS: false,
-        Kloak: false,
-        El: false,
-        Asbest: false
+      const AUTH_MAP = {
+        VFUL: "VVS",
+        KFUL: "Kloak",
+        EFUL: "El",
+        ASBE: "Asbest"
       };
 
-      // Autorisationsnumre
-      if (entry.autnr) {
-        entry.autnr.split("#").forEach(block => {
-          const prefix = block.split("-")[0]?.trim().toUpperCase();
-          const mapped = AUTH_MAP[prefix];
-          if (mapped) auth[mapped] = true;
+      for (const entry of sikData) {
+        const cvr = String(entry.cvr || "").replace(/\D/g, "");
+        if (cvr.length !== 8) continue;
+
+        const auth = { VVS: false, Kloak: false, El: false, Asbest: false };
+
+        if (entry.autnr) {
+          entry.autnr.split("#").forEach(block => {
+            const prefix = block.split("-")[0]?.trim().toUpperCase();
+            const mapped = AUTH_MAP[prefix];
+            if (mapped) auth[mapped] = true;
+          });
+        }
+
+        if (entry.forretningsomr) {
+          const t = entry.forretningsomr.toLowerCase();
+          if (t.includes("vvs")) auth.VVS = true;
+          if (t.includes("kloak")) auth.Kloak = true;
+          if (t.includes("el")) auth.El = true;
+          if (t.includes("asbest")) auth.Asbest = true;
+        }
+
+        await fetch(`${process.env.KV_ENDPOINT}/${cvr}`, {
+          method: "PUT",
+          headers: {
+            "Authorization": `Bearer ${process.env.KV_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(auth)
         });
       }
 
-      // Fallback på forretningsområde
-      if (entry.forretningsomr) {
-        const t = entry.forretningsomr.toLowerCase();
-        if (t.includes("vvs")) auth.VVS = true;
-        if (t.includes("kloak")) auth.Kloak = true;
-        if (t.includes("el")) auth.El = true;
-        if (t.includes("asbest")) auth.Asbest = true;
-      }
+      console.log("SIK batch update completed");
 
-      // Skriv til Cloudflare KV
-      const kvUrl = `${process.env.KV_ENDPOINT}/${cvr}`;
-
-      await fetch(kvUrl, {
-        method: "PUT",
-        headers: {
-          "Authorization": `Bearer ${process.env.KV_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(auth)
-      });
-
-      written++;
+    } catch (err) {
+      console.error("Batch update failed:", err.message);
     }
-
-    res.json({
-      ok: true,
-      recordsWritten: written
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
-  }
+  })();
 });
+
 
 app.listen(PORT, () => {
   console.log("SIK batch updater running on port", PORT);
