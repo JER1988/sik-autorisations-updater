@@ -74,13 +74,15 @@ app.get("/update", (req, res) => {
 
         /* -------- skriv til Cloudflare KV -------- */
         const kvRes = await fetch(`${process.env.KV_ENDPOINT}/${cvr}`, {
-          method: "PUT",
-          headers: {
-            "Authorization": `Bearer ${process.env.KV_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify(auth)
-        });
+  method: "PUT",
+  headers: {
+    "Authorization": `Bearer ${process.env.KV_TOKEN}`,
+    "Content-Type": "application/json",
+    "X-Auth-User-Service-Key": "true"
+  },
+  body: JSON.stringify(auth)
+});
+
 
         if (!kvRes.ok) {
           const text = await kvRes.text();
